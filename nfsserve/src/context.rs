@@ -1,7 +1,8 @@
-use crate::vfs::NFSFileSystem;
-use std::fmt;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
+
 use tokio::sync::mpsc;
+
+use crate::vfs::NFSFileSystem;
 #[derive(Clone)]
 pub struct RPCContext {
     pub local_port: u16,

@@ -6,7 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use tokio::{io::AsyncWriteExt, net::TcpListener, sync::mpsc};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{context::RPCContext, rpcwire::*, vfs::NFSFileSystem};
 
@@ -34,40 +34,53 @@ async fn process_socket(
     let (mut message_handler, mut socksend, mut msgrecvchan) = SocketMessageHandler::new(&context);
     let _ = socket.set_nodelay(true);
 
-    tokio::spawn(async move {
-        loop {
-            if let Err(e) = message_handler.read().await {
-                debug!("Message loop broken due to {:?}", e);
-                break;
+    if !false {
+        tokio::spawn(async move {
+            info!("entering message handler loop");
+            loop {
+                if let Err(e) = message_handler.read().await {
+                    // debug!("Message loop broken due to {:?}", e);
+                    debug!("Message loop broken");
+                    break;
+                }
             }
-        }
-    });
+        });
+    }
+
+    info!("entering select loop");
     loop {
+        info!("select loop");
         tokio::select! {
             _ = socket.readable() => {
-                let mut buf = [0; 128000];
+                // TODO original code used 128000
+                let mut buf = [0; 128];
 
                 match socket.try_read(&mut buf) {
                     Ok(0) => {
                         return Ok(());
                     }
                     Ok(n) => {
+                        info!("shoveling {n} bytes");
                         let _ = socksend.write_all(&buf[..n]).await;
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         continue;
                     }
                     Err(e) => {
-                        debug!("Message handling closed : {:?}", e);
+                        // debug!("Message handling closed : {:?}", e);
+                        warn!("Message handling closed");
                         return Err(e.into());
                     }
                 }
 
             },
             reply = msgrecvchan.recv() => {
+                // info!("exiting early (2)");
+                // return Ok(());
                 match reply {
                     Some(Err(e)) => {
-                        debug!("Message handling closed : {:?}", e);
+                        //debug!("Message handling closed : {:?}", e);
+                        warn!("Message handling closed");
                         return Err(e);
                     }
                     Some(Ok(msg)) => {
@@ -188,6 +201,7 @@ impl<T: NFSFileSystem + Send + Sync + 'static> NFSTcp for NFSTcpListener<T> {
 
     /// Loops forever and never returns handling all incoming connections.
     async fn handle_forever(&self) -> io::Result<()> {
+        info!("entering nfs loop");
         loop {
             let (socket, _) = self.listener.accept().await?;
             let context = RPCContext {
@@ -198,7 +212,12 @@ impl<T: NFSFileSystem + Send + Sync + 'static> NFSTcp for NFSTcpListener<T> {
                 mount_signal: self.mount_signal.clone(),
             };
             info!("Accepting connection from {}", context.client_addr);
-            debug!("Accepting socket {:?} {:?}", socket, context);
+            // info!(
+            //     "Accepting socket {:?} - context size: {:?}",
+            //     std::mem::size_of_val(&socket),
+            //     std::mem::size_of_val(&context)
+            // );
+
             tokio::spawn(async move {
                 let _ = process_socket(socket, context).await;
             });

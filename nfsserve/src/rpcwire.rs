@@ -1,24 +1,16 @@
+use std::io::{Cursor, Read, Write};
+
 use anyhow::anyhow;
-use std::io::Cursor;
-use std::io::{Read, Write};
-use tracing::{error, trace, warn};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, DuplexStream},
+    sync::mpsc,
+};
+use tracing::{error, info, trace, warn};
 
-use crate::context::RPCContext;
-use crate::rpc::*;
-use crate::xdr::*;
-
-use crate::mount;
-use crate::mount_handlers;
-
-use crate::nfs;
-use crate::nfs_handlers;
-
-use crate::portmap;
-use crate::portmap_handlers;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::io::DuplexStream;
-use tokio::sync::mpsc;
+use crate::{
+    context::RPCContext, mount, mount_handlers, nfs, nfs_handlers, portmap, portmap_handlers,
+    rpc::*, xdr::*,
+};
 
 // Information from RFC 5531
 // https://datatracker.ietf.org/doc/html/rfc5531
@@ -47,11 +39,14 @@ async fn handle_rpc(
             return Ok(());
         }
         if call.prog == nfs::PROGRAM {
-            nfs_handlers::handle_nfs(xid, call, input, output, &context).await
+            Box::pin(nfs_handlers::handle_nfs(xid, call, input, output, &context)).await
         } else if call.prog == portmap::PROGRAM {
             portmap_handlers::handle_portmap(xid, call, input, output, &context)
         } else if call.prog == mount::PROGRAM {
-            mount_handlers::handle_mount(xid, call, input, output, &context).await
+            Box::pin(mount_handlers::handle_mount(
+                xid, call, input, output, &context,
+            ))
+            .await
         } else if call.prog == NFS_ACL_PROGRAM
             || call.prog == NFS_ID_MAP_PROGRAM
             || call.prog == NFS_METADATA_PROGRAM
@@ -96,26 +91,26 @@ async fn read_fragment(
     socket: &mut DuplexStream,
     append_to: &mut Vec<u8>,
 ) -> Result<bool, anyhow::Error> {
+    info!("read_fragment()");
     let mut header_buf = [0_u8; 4];
     socket.read_exact(&mut header_buf).await?;
     let fragment_header = u32::from_be_bytes(header_buf);
     let is_last = (fragment_header & (1 << 31)) > 0;
     let length = (fragment_header & ((1 << 31) - 1)) as usize;
-    trace!("Reading fragment length:{}, last:{}", length, is_last);
+    info!("Reading fragment length:{}, last:{}", length, is_last);
     let start_offset = append_to.len();
-    append_to.resize(append_to.len() + length, 0);
+    append_to.resize(append_to.len() + length, 0u8);
     socket.read_exact(&mut append_to[start_offset..]).await?;
-    trace!(
+    info!(
         "Finishing Reading fragment length:{}, last:{}",
-        length,
-        is_last
+        length, is_last
     );
     Ok(is_last)
 }
 
 pub async fn write_fragment(
     socket: &mut tokio::net::TcpStream,
-    buf: &Vec<u8>,
+    buf: &[u8],
 ) -> Result<(), anyhow::Error> {
     // TODO: split into many fragments
     assert!(buf.len() < (1 << 31));
@@ -150,7 +145,9 @@ impl SocketMessageHandler {
         DuplexStream,
         mpsc::UnboundedReceiver<SocketMessageType>,
     ) {
-        let (socksend, sockrecv) = tokio::io::duplex(256000);
+        // TODO original code used 256000
+        let (socksend, sockrecv) = tokio::io::duplex(1024);
+        // TODO original code was unbounded
         let (msgsend, msgrecv) = mpsc::unbounded_channel();
         (
             Self {
@@ -166,17 +163,23 @@ impl SocketMessageHandler {
 
     /// Reads a fragment from the socket. This should be looped.
     pub async fn read(&mut self) -> Result<(), anyhow::Error> {
+        info!("read()");
         let is_last =
             read_fragment(&mut self.socket_receive_channel, &mut self.cur_fragment).await?;
         if is_last {
+            info!("is_last");
             let fragment = std::mem::take(&mut self.cur_fragment);
             let context = self.context.clone();
             let send = self.reply_send_channel.clone();
             tokio::spawn(async move {
                 let mut write_buf: Vec<u8> = Vec::new();
                 let mut write_cursor = Cursor::new(&mut write_buf);
-                let maybe_reply =
-                    handle_rpc(&mut Cursor::new(fragment), &mut write_cursor, context).await;
+                let maybe_reply = Box::pin(handle_rpc(
+                    &mut Cursor::new(fragment),
+                    &mut write_cursor,
+                    context,
+                ))
+                .await;
                 match maybe_reply {
                     Err(e) => {
                         error!("RPC Error: {:?}", e);
