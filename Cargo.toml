@@ -9,6 +9,8 @@ rust-version = "1.71"
 [profile.release]
 opt-level = 3
 lto = "fat"
+codegen-units = 1
+panic = 'abort'
 
 [profile.dev]
 debug = true    # Symbols are nice and they don't increase the size on Flash
@@ -30,19 +32,21 @@ embassy = [
 
 [dependencies]
 log = { version = "0.4", default-features = false }
-esp-idf-svc = { version = "0.48", default-features = false }
-esp-idf-sys = { version = "0.34.1", features = ["binstart"] }
+esp-idf-svc = { version = "0.49", default-features = false }
+esp-idf-sys = { version = "0.35", features = ["binstart"] }
 
 tokio = { version = "1.36.0", features = ["rt", "net", "io-util"] }
-mio = { version = "0.8.11", features = ["log"] }
+#mio = { version = "0.8.11", features = ["log"]}
+mio = { version = "1", features = ["log"] }
 anyhow = "1.0.81"
-embedded-svc = "0.27.1"
-esp-idf-hal = "0.43.1"
+embedded-svc = "0.28"
+esp-idf-hal = "0.44"
 nfsserve = { path = "nfsserve", default-features = false }
 async-trait = "0.1.78"
+tracing = { version = "0.1.31", features = ["log"] }
 
 [build-dependencies]
-embuild = "0.31.3"
+embuild = "0.32"
 
 # [patch.crates-io]
 # mio = { git = "https://github.com/tokio-rs/mio", branch = "master" }
